@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>RengerArena</title>
-    <link rel="icon" type="image/x-icon" href="favicon.ico">
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23050805'/><polygon points='30,20 80,50 30,80 40,50' fill='none' stroke='%2300ff00' stroke-width='7' stroke-linejoin='round'/><circle cx='80' cy='50' r='10' fill='%23ff0055'/><circle cx='80' cy='50' r='18' stroke='%23ff0055' stroke-width='4' fill='none'/><line x1='50' y1='50' x2='62' y2='50' stroke='%2300ffff' stroke-width='6' stroke-linecap='round'/></svg>">
     <style>
         body { margin: 0; overflow: hidden; background: #050805; font-family: 'Segoe UI', sans-serif; touch-action: none; cursor: crosshair; }
@@ -28,7 +27,12 @@
     <div style="font-size: 18px;">SCORE: <span id="score">0</span></div>
     <div id="wp-text" style="color: #0ff;">GUN: PISTOL</div>
     <div id="wp-timer" style="color: #ff0;"></div>
-    <div id="wave-info" style="color: #f0f; font-weight: bold; margin-top: 5px;">WAVE 1 | NEXT WAVE IN: 17s (MAX ENEMIES: 15)</div>
+    
+    <!-- Вывод текущего уровня (волны) и отсчета времени с миллисекундами -->
+    <div id="wave-info" style="color: #f0f; font-weight: bold; margin-top: 5px;">
+        WAVE 1|17.00s
+    </div>
+    
     <div style="font-size: 10px; margin-top: 5px; opacity: 0.7;">УПРАВЛЕНИЕ: WASD | МЫШЬ | DASH: ПРОБЕЛ</div>
 </div>
 
@@ -116,7 +120,7 @@ let score = 0;
 let wave = 1;
 let maxEnemies = 15;
 let gameStartTime = Date.now();
-const WAVE_INTERVAL = 17000; // 17 секунд
+const WAVE_INTERVAL = 17000; // 17 секунд длительность волны
 
 const WEAPONS = {
     PISTOL: { name: "PISTOL", fireRate: 400, color: "#fff", spread: 0.05, count: 1, bSize: 3, speed: 12, sound: 'shoot' },
@@ -150,7 +154,7 @@ function takeDamage(amount) {
     if (player.isDashing || player.invulnerableTime > 0) return;
     
     player.hp -= amount;
-    player.invulnerableTime = 30; // ~0.5 сек невидимости/неуязвимости
+    player.invulnerableTime = 30;
     playSound('playerHurt');
 
     if (player.hp <= 0) {
@@ -282,14 +286,15 @@ function updateJoy(t, zone, type) {
 function update() {
     pollGamepadAndKeyboard();
 
-    // Каждые 17 сек удваиваем лимит врагов
+    // Расчет текущей волны и времени до следующей с миллисекундами
     let elapsed = Date.now() - gameStartTime;
     let currentWaveNum = Math.floor(elapsed / WAVE_INTERVAL) + 1;
     if (currentWaveNum > wave) {
         wave = currentWaveNum;
         maxEnemies *= 2;
     }
-    let timeToNextWave = Math.ceil((WAVE_INTERVAL - (elapsed % WAVE_INTERVAL)) / 1000);
+    let msToNextWave = WAVE_INTERVAL - (elapsed % WAVE_INTERVAL);
+    let timeToNextWaveStr = (msToNextWave / 1000).toFixed(2); // Точность до двух знаков после запятой
 
     let s = player.isDashing ? player.speed * 2.5 : player.speed;
     let nx = player.x + controls.move.x * s, ny = player.y + controls.move.y * s;
@@ -335,12 +340,10 @@ function update() {
             en.y += (dy/d) * en.speed;
         }
 
-        // Физический удар наносит 6 HP
         if (d < player.radius + en.radius) {
             takeDamage(6);
         }
 
-        // Попадание пуль игрока
         bullets.forEach((b, bi) => {
             if (Math.hypot(b.x-en.x, b.y-en.y) < en.radius + 12) {
                 enemies.splice(i,1);
@@ -348,7 +351,6 @@ function update() {
                 score += en.isShooter ? 20 : 10;
                 playSound('hit');
 
-                // Спавн бонусов (оружие или аптечка)
                 if(Math.random() < 0.2) {
                     let randType = Math.random();
                     let pType = randType < 0.3 ? "HEAL" : ["UZI","SHOTGUN","MG"][Math.floor(Math.random()*3)];
@@ -363,7 +365,6 @@ function update() {
         });
     });
 
-    // Вражеские пули (Дальний урон наносит 7 HP)
     enemyBullets.forEach((eb, ebi) => {
         eb.x += eb.vx;
         eb.y += eb.vy;
@@ -378,12 +379,11 @@ function update() {
     bullets.forEach(b => { b.x += b.vx; b.y += b.vy; });
     bullets = bullets.filter(b => b.x > 0 && b.x < canvas.width && b.y > 0 && b.y < canvas.height);
 
-    // Подбор и время жизни бонусов (7 секунд)
     const now = Date.now();
     powerups.forEach((p, i) => {
         if (Math.hypot(player.x-p.x, player.y-p.y) < 30) {
             if (p.type === "HEAL") {
-                player.hp = Math.min(player.maxHp, player.hp + 30); // Восстанавливает 30 HP
+                player.hp = Math.min(player.maxHp, player.hp + 30);
                 playSound('heal');
             } else {
                 player.weapon = WEAPONS[p.type];
@@ -397,7 +397,7 @@ function update() {
 
     if (player.wpTimer > 0) player.wpTimer--; else player.weapon = WEAPONS.PISTOL;
 
-    // Обновление UI
+    // Обновление интерфейса
     document.getElementById('hp-text').innerText = `${player.hp}/${player.maxHp}`;
     const hpFill = document.getElementById('hp-fill');
     hpFill.style.width = `${(player.hp / player.maxHp) * 100}%`;
@@ -406,19 +406,19 @@ function update() {
     document.getElementById('score').innerText = score;
     document.getElementById('wp-text').innerText = "GUN: " + player.weapon.name;
     document.getElementById('wp-timer').innerText = player.wpTimer > 0 ? (player.wpTimer/60).toFixed(1) + "s" : "";
-    document.getElementById('wave-info').innerText = `WAVE ${wave} | NEXT WAVE IN: ${timeToNextWave}s (MAX ENEMIES: ${maxEnemies})`;
+    
+    // Вывод текста со временем с миллисекундами (например, 12.34s)
+    document.getElementById('wave-info').innerText = `WAVE ${wave} | NEXT WAVE IN: ${timeToNextWaveStr}s (MAX ENEMIES: ${maxEnemies})`;
 }
 
 function draw() {
     ctx.fillStyle = "rgba(5, 10, 5, 0.4)"; ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // Отрисовка бонусов (мигают за 2 секунды до исчезновения)
     const now = Date.now();
     powerups.forEach(p => {
         let timeLeft = 7000 - (now - p.spawnTime);
         if (timeLeft > 2000 || Math.floor(now / 100) % 2 === 0) {
             if (p.type === "HEAL") {
-                // Отрисовка Аптечки (зеленый кружок с белым крестиком)
                 ctx.fillStyle = "#0f0";
                 ctx.beginPath();
                 ctx.arc(p.x, p.y, 9, 0, Math.PI*2);
@@ -427,7 +427,6 @@ function draw() {
                 ctx.fillRect(p.x - 2, p.y - 5, 4, 10);
                 ctx.fillRect(p.x - 5, p.y - 2, 10, 4);
             } else {
-                // Бонусы оружия
                 ctx.fillStyle = "#fff";
                 ctx.beginPath();
                 ctx.arc(p.x, p.y, 8, 0, Math.PI*2);
@@ -436,7 +435,6 @@ function draw() {
         }
     });
     
-    // Игрок (мигает при получении урона)
     if (player.invulnerableTime % 4 < 2) {
         ctx.save(); ctx.translate(player.x, player.y); ctx.rotate(player.angle);
         ctx.strokeStyle = player.isDashing ? "#fff" : "#0f0"; ctx.lineWidth = 3;
@@ -444,10 +442,8 @@ function draw() {
         ctx.restore();
     }
 
-    // Пули игрока
     bullets.forEach(b => { ctx.fillStyle = b.c; ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI*2); ctx.fill(); });
 
-    // Пули врагов
     enemyBullets.forEach(eb => {
         ctx.fillStyle = "#ff0055";
         ctx.beginPath();
@@ -455,7 +451,6 @@ function draw() {
         ctx.fill();
     });
 
-    // Враги
     enemies.forEach(en => {
         if (en.isShooter) {
             ctx.fillStyle = "#b0f";
@@ -477,7 +472,6 @@ function draw() {
 
 function loop() { update(); draw(); requestAnimationFrame(loop); }
 
-// Спавн врагов
 setInterval(() => {
     if (enemies.length < maxEnemies) {
         let x, y, s = Math.floor(Math.random()*4);
@@ -503,6 +497,7 @@ player.x = canvas.width/2; player.y = canvas.height/2;
 setupControls();
 loop();
 </script>
-</body>
     <script src="https://dmamax.vercel.app/legal-module.js"></script>
+
+</body>
 </html>
