@@ -408,7 +408,7 @@ function update() {
     document.getElementById('wp-timer').innerText = player.wpTimer > 0 ? (player.wpTimer/60).toFixed(1) + "s" : "";
     
     // Вывод текста со временем с миллисекундами (например, 12.34s)
-    document.getElementById('wave-info').innerText = `WAVE ${wave}|${timeToNextWaveStr}s`;
+    document.getElementById('wave-info').innerText = `WAVE ${wave}|${timeToNextWaveStr}s→`;
 }
 
 function draw() {
