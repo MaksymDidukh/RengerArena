@@ -111,6 +111,13 @@ function playSound(type) {
         gain.gain.setValueAtTime(0.1, now);
         gain.gain.linearRampToValueAtTime(0, now + 0.3);
         osc.start(); osc.stop(now + 0.3);
+    } else if (type === 'explosion') {
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(120, now);
+        osc.frequency.exponentialRampToValueAtTime(30, now + 0.3);
+        gain.gain.setValueAtTime(0.3, now);
+        gain.gain.linearRampToValueAtTime(0, now + 0.3);
+        osc.start(); osc.stop(now + 0.3);
     }
 }
 
@@ -120,6 +127,7 @@ let wave = 1;
 let maxEnemies = 15;
 let gameStartTime = Date.now();
 const WAVE_INTERVAL = 17000;
+let isGameOver = false;
 
 const WEAPONS = {
     PISTOL: { name: "PISTOL", fireRate: 400, color: "#fff", spread: 0.05, count: 1, bSize: 3, speed: 12, sound: 'shoot' },
@@ -135,10 +143,67 @@ const player = {
     isDashing: false, dashTime: 0, dashCooldown: 0
 };
 
-let enemies = [], bullets = [], enemyBullets = [], powerups = [];
+let enemies = [], bullets = [], enemyBullets = [], powerups = [], splatters = [], explosions = [];
 const controls = { move: { x: 0, y: 0, tId: null }, shoot: { x: 0, y: 0, active: false, tId: null } };
 const keys = {};
 const mouse = { x: 0, y: 0, isDown: false, active: false };
+
+function getEnemyColor(type) {
+    if (type === 'shooter') return "#bb00ff";
+    if (type === 'flanker') return "#ff8800";
+    if (type === 'evader') return "#00ff00";
+    return "#ff0055";
+}
+
+function triggerExplosion(x, y, radius, damage, color) {
+    playSound('explosion');
+    explosions.push({
+        x: x, y: y,
+        maxRadius: radius,
+        currentRadius: 0,
+        color: color,
+        duration: 20,
+        timer: 20
+    });
+
+    let dToPlayer = Math.hypot(player.x - x, player.y - y);
+    if (dToPlayer < radius + player.radius) {
+        takeDamage(damage);
+    }
+}
+
+function killEnemy(en, index, wasExploded = false) {
+    let color = getEnemyColor(en.type);
+    splatters.push({
+        x: en.x,
+        y: en.y,
+        radius: 8 + Math.random() * 4,
+        color: color,
+        spawnTime: Date.now(),
+        points: Array.from({length: 6}, () => ({
+            angle: Math.random() * Math.PI * 2,
+            dist: Math.random() * 6
+        }))
+    });
+
+    if (wasExploded || en.isExplosive) {
+        triggerExplosion(en.x, en.y, 65, 18, color);
+    }
+
+    enemies.splice(index, 1);
+    score += en.type === 'shooter' ? 20 : (en.type === 'evader' ? 25 : (en.type === 'flanker' ? 15 : 10));
+
+    if (Math.random() < 0.2) {
+        let randType = Math.random();
+        let pType = randType < 0.3 ? "HEAL" : ["UZI", "SHOTGUN", "MG"][Math.floor(Math.random() * 3)];
+        powerups.push({
+            x: en.x,
+            y: en.y,
+            type: pType,
+            spawnTime: Date.now()
+        });
+    }
+}
 
 function triggerDash() {
     if (player.dashCooldown <= 0) {
@@ -150,7 +215,7 @@ function triggerDash() {
 }
 
 function takeDamage(amount) {
-    if (player.isDashing || player.invulnerableTime > 0) return;
+    if (player.isDashing || player.invulnerableTime > 0 || isGameOver) return;
     
     player.hp -= amount;
     player.invulnerableTime = 30;
@@ -158,7 +223,11 @@ function takeDamage(amount) {
 
     if (player.hp <= 0) {
         player.hp = 0;
-        resetGame();
+        isGameOver = true;
+        // Автоматический перезапуск игры через 1 секунду после поражения
+        setTimeout(() => {
+            resetGame();
+        }, 1000);
     }
 }
 
@@ -171,10 +240,15 @@ function resetGame() {
     bullets = [];
     enemyBullets = [];
     powerups = [];
+    splatters = [];
+    explosions = [];
+    player.x = canvas.width / 2;
+    player.y = canvas.height / 2;
     player.hp = player.maxHp;
     player.invulnerableTime = 0;
     player.weapon = WEAPONS.PISTOL;
     player.wpTimer = 0;
+    isGameOver = false;
 }
 
 // --- CONTROLS LISTENERS ---
@@ -283,6 +357,8 @@ function updateJoy(t, zone, type) {
 
 // --- GAME LOOP ---
 function update() {
+    if (isGameOver) return;
+
     pollGamepadAndKeyboard();
 
     let elapsed = Date.now() - gameStartTime;
@@ -319,14 +395,28 @@ function update() {
         }
     }
 
+    // Обновление взрывов
+    explosions.forEach((exp, ei) => {
+        exp.timer--;
+        exp.currentRadius = exp.maxRadius * (1 - exp.timer / exp.duration);
+    });
+    explosions = explosions.filter(exp => exp.timer > 0);
+
     // Обновление врагов
-    enemies.forEach((en, i) => {
+    for (let i = enemies.length - 1; i >= 0; i--) {
+        let en = enemies[i];
         let dx = player.x - en.x, dy = player.y - en.y, d = Math.hypot(dx, dy);
         let angleToEnemy = Math.atan2(-dy, -dx); 
         let angleDiff = Math.abs(player.angle - angleToEnemy);
         if (angleDiff > Math.PI) angleDiff = Math.PI * 2 - angleDiff;
 
         if (en.dodgeCooldown > 0) en.dodgeCooldown--;
+
+        // Взрыв камикадзе до обычной смерти при приближении
+        if (en.type === 'evader' && d < 28) {
+            killEnemy(en, i, true);
+            continue;
+        }
 
         // 1. Уворот от прицеливания (если игрок целится в врага и стреляет)
         if ((en.type === 'evader' || en.type === 'flanker') && controls.shoot.active && angleDiff < 0.35 && d < 250 && en.dodgeCooldown <= 0) {
@@ -410,23 +500,15 @@ function update() {
                 playSound('hit');
 
                 if (en.hp <= 0) {
-                    enemies.splice(i, 1);
-                    score += en.type === 'shooter' ? 20 : (en.type === 'evader' ? 25 : (en.type === 'flanker' ? 15 : 10));
-
-                    if (Math.random() < 0.2) {
-                        let randType = Math.random();
-                        let pType = randType < 0.3 ? "HEAL" : ["UZI", "SHOTGUN", "MG"][Math.floor(Math.random() * 3)];
-                        powerups.push({
-                            x: en.x,
-                            y: en.y,
-                            type: pType,
-                            spawnTime: Date.now()
-                        });
-                    }
+                    killEnemy(en, i);
                 }
             }
         });
-    });
+    }
+
+    // Удаление полностью исчезнувших клякс (спустя 3 секунды: 1с задержка + 2с угасание)
+    const nowTime = Date.now();
+    splatters = splatters.filter(s => (nowTime - s.spawnTime) < 3000);
 
     enemyBullets.forEach((eb, ebi) => {
         eb.x += eb.vx;
@@ -475,7 +557,51 @@ function draw() {
     ctx.fillStyle = "rgba(5, 10, 5, 0.4)"; ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     const now = Date.now();
-    
+
+    // Отрисовка клякс на земле с таймаутом угасания
+    splatters.forEach(s => {
+        let age = now - s.spawnTime;
+        let alpha = 0.35;
+        if (age > 1000) {
+            alpha = 0.35 * (1 - (age - 1000) / 2000);
+        }
+        if (alpha > 0) {
+            ctx.save();
+            ctx.globalAlpha = alpha;
+            ctx.fillStyle = s.color;
+            ctx.beginPath();
+            ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2);
+            ctx.fill();
+            s.points.forEach(pt => {
+                ctx.beginPath();
+                ctx.arc(s.x + Math.cos(pt.angle) * pt.dist, s.y + Math.sin(pt.angle) * pt.dist, s.radius * 0.4, 0, Math.PI * 2);
+                ctx.fill();
+            });
+            ctx.restore();
+        }
+    });
+
+    // Отрисовка взрывов
+    explosions.forEach(exp => {
+        ctx.save();
+        ctx.strokeStyle = exp.color;
+        ctx.lineWidth = 3;
+        ctx.globalAlpha = exp.timer / exp.duration;
+        ctx.beginPath();
+        ctx.arc(exp.x, exp.y, exp.currentRadius, 0, Math.PI * 2);
+        ctx.stroke();
+
+        ctx.fillStyle = exp.color;
+        for (let a = 0; a < Math.PI * 2; a += Math.PI / 4) {
+            let px = exp.x + Math.cos(a) * exp.currentRadius;
+            let py = exp.y + Math.sin(a) * exp.currentRadius;
+            ctx.beginPath();
+            ctx.arc(px, py, 3, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        ctx.restore();
+    });
+
     // Отрисовка бонусов
     powerups.forEach(p => {
         let timeLeftMs = 7000 - (now - p.spawnTime);
@@ -503,7 +629,7 @@ function draw() {
     });
     
     // Игрок
-    if (player.invulnerableTime % 4 < 2) {
+    if (!isGameOver && player.invulnerableTime % 4 < 2) {
         ctx.save(); ctx.translate(player.x, player.y); ctx.rotate(player.angle);
         ctx.strokeStyle = player.isDashing ? "#fff" : "#0f0"; ctx.lineWidth = 3;
         ctx.beginPath(); ctx.moveTo(10,0); ctx.lineTo(-7,-8); ctx.lineTo(-7,8); ctx.closePath(); ctx.stroke();
@@ -521,34 +647,21 @@ function draw() {
 
     // Отрисовка врагов
     enemies.forEach(en => {
+        let enemyColor = getEnemyColor(en.type);
+        ctx.fillStyle = enemyColor;
+        ctx.beginPath();
+        ctx.arc(en.x, en.y, en.radius, 0, Math.PI*2);
+        ctx.fill();
+
         if (en.type === 'shooter') {
-            ctx.fillStyle = "#b0f"; // Стрелок (Фиолетовый)
-            ctx.beginPath();
-            ctx.arc(en.x, en.y, en.radius, 0, Math.PI*2);
-            ctx.fill();
             ctx.fillStyle = "#0ff";
             ctx.fillRect(en.x - 3, en.y - 3, 6, 6);
-        } else if (en.type === 'flanker') {
-            ctx.fillStyle = "#f80"; // Фланговик (Оранжевый)
-            ctx.beginPath();
-            ctx.arc(en.x, en.y, en.radius, 0, Math.PI*2);
-            ctx.fill();
-            ctx.strokeStyle="#fff";
-            ctx.strokeRect(en.x-3, en.y-3, 6, 6);
         } else if (en.type === 'evader') {
-            ctx.fillStyle = "#0f0"; // Уворотчик (Ярко-зеленый)
-            ctx.beginPath();
-            ctx.arc(en.x, en.y, en.radius, 0, Math.PI*2);
-            ctx.fill();
-            ctx.strokeStyle="#000";
-            ctx.strokeRect(en.x-3, en.y-3, 6, 6);
+            ctx.strokeStyle = "#000";
+            ctx.strokeRect(en.x - 3, en.y - 3, 6, 6);
         } else {
-            ctx.fillStyle = "#f05"; // Обычный (Красный)
-            ctx.beginPath();
-            ctx.arc(en.x, en.y, en.radius, 0, Math.PI*2);
-            ctx.fill();
-            ctx.strokeStyle="#fff";
-            ctx.strokeRect(en.x-3, en.y-3, 6, 6);
+            ctx.strokeStyle = en.isExplosive ? "#ff0" : "#fff";
+            ctx.strokeRect(en.x - 3, en.y - 3, 6, 6);
         }
 
         // Полоса здоровья (HP Bar) над врагом
@@ -567,12 +680,22 @@ function draw() {
         ctx.lineWidth = 1;
         ctx.strokeRect(barX, barY, barW, barH);
     });
+
+    // Экран GAME OVER при поражении
+    if (isGameOver) {
+        ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "#f00";
+        ctx.font = "bold 36px sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("GAME OVER", canvas.width / 2, canvas.height / 2);
+    }
 }
 
 function loop() { update(); draw(); requestAnimationFrame(loop); }
 
 setInterval(() => {
-    if (enemies.length < maxEnemies) {
+    if (!isGameOver && enemies.length < maxEnemies) {
         let x, y, s = Math.floor(Math.random()*4);
         if(s==0){x=Math.random()*canvas.width; y=-30;} else if(s==1){x=Math.random()*canvas.width; y=canvas.height+30;}
         else if(s==2){x=-30; y=Math.random()*canvas.height;} else {x=canvas.width+30; y=canvas.height+30;}
@@ -588,6 +711,7 @@ setInterval(() => {
             radius: 11,
             speed: type === 'shooter' ? 1.5 : (type === 'evader' ? 2.5 : (type === 'flanker' ? 2.2 : 2.0)),
             type: type,
+            isExplosive: type === 'chaser' && Math.random() < 0.3,
             hp: 2,
             maxHp: 2,
             lastShot: Date.now(),
