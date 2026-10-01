@@ -28,7 +28,6 @@
     <div id="wp-text" style="color: #0ff;">GUN: PISTOL</div>
     <div id="wp-timer" style="color: #ff0;"></div>
     
-    <!-- Вывод текущего уровня (волны) и отсчета времени с миллисекундами -->
     <div id="wave-info" style="color: #f0f; font-weight: bold; margin-top: 5px;">
         WAVE 1|17.00s
     </div>
@@ -120,7 +119,7 @@ let score = 0;
 let wave = 1;
 let maxEnemies = 15;
 let gameStartTime = Date.now();
-const WAVE_INTERVAL = 17000; // 17 секунд длительность волны
+const WAVE_INTERVAL = 17000;
 
 const WEAPONS = {
     PISTOL: { name: "PISTOL", fireRate: 400, color: "#fff", spread: 0.05, count: 1, bSize: 3, speed: 12, sound: 'shoot' },
@@ -286,7 +285,6 @@ function updateJoy(t, zone, type) {
 function update() {
     pollGamepadAndKeyboard();
 
-    // Расчет текущей волны и времени до следующей с миллисекундами
     let elapsed = Date.now() - gameStartTime;
     let currentWaveNum = Math.floor(elapsed / WAVE_INTERVAL) + 1;
     if (currentWaveNum > wave) {
@@ -294,7 +292,7 @@ function update() {
         maxEnemies *= 2;
     }
     let msToNextWave = WAVE_INTERVAL - (elapsed % WAVE_INTERVAL);
-    let timeToNextWaveStr = (msToNextWave / 1000).toFixed(2); // Точность до двух знаков после запятой
+    let timeToNextWaveStr = (msToNextWave / 1000).toFixed(2);
 
     let s = player.isDashing ? player.speed * 2.5 : player.speed;
     let nx = player.x + controls.move.x * s, ny = player.y + controls.move.y * s;
@@ -324,42 +322,107 @@ function update() {
     // Обновление врагов
     enemies.forEach((en, i) => {
         let dx = player.x - en.x, dy = player.y - en.y, d = Math.hypot(dx, dy);
+        let angleToEnemy = Math.atan2(-dy, -dx); 
+        let angleDiff = Math.abs(player.angle - angleToEnemy);
+        if (angleDiff > Math.PI) angleDiff = Math.PI * 2 - angleDiff;
 
-        if (en.isShooter) {
-            if (d > 180) { en.x += (dx/d) * en.speed; en.y += (dy/d) * en.speed; }
-            else if (d < 120) { en.x -= (dx/d) * en.speed; en.y -= (dy/d) * en.speed; }
+        if (en.dodgeCooldown > 0) en.dodgeCooldown--;
 
-            if (Date.now() - en.lastShot > en.fireRate) {
-                let ang = Math.atan2(dy, dx);
-                enemyBullets.push({ x: en.x, y: en.y, vx: Math.cos(ang) * 5, vy: Math.sin(ang) * 5, r: 4 });
-                playSound('enemyShoot');
-                en.lastShot = Date.now();
+        // 1. Уворот от прицеливания (если игрок целится в врага и стреляет)
+        if ((en.type === 'evader' || en.type === 'flanker') && controls.shoot.active && angleDiff < 0.35 && d < 250 && en.dodgeCooldown <= 0) {
+            en.dodgeDir = Math.random() < 0.5 ? 1 : -1;
+            en.dodgeTimer = 18;
+            en.dodgeCooldown = 60;
+        }
+
+        // 2. Уворот от пролетающих близко пуль
+        if ((en.type === 'evader' || en.type === 'flanker') && en.dodgeCooldown <= 0) {
+            for (let b of bullets) {
+                let bdist = Math.hypot(b.x - en.x, b.y - en.y);
+                if (bdist < 60) {
+                    let pAngle = Math.atan2(b.vy, b.vx);
+                    let toEnemyAngle = Math.atan2(en.y - b.y, en.x - b.x);
+                    let diff = Math.abs(pAngle - toEnemyAngle);
+                    if (diff > Math.PI) diff = Math.PI * 2 - diff;
+                    
+                    if (diff < 0.6) { // Пуля летит прямо в бота
+                        en.dodgeDir = Math.random() < 0.5 ? 1 : -1;
+                        en.dodgeTimer = 15;
+                        en.dodgeCooldown = 50;
+                        break;
+                    }
+                }
             }
+        }
+
+        // Выполнение движения уворота (стрэйф)
+        if (en.dodgeTimer > 0) {
+            en.dodgeTimer--;
+            let perpAngle = Math.atan2(dy, dx) + (Math.PI / 2) * en.dodgeDir;
+            en.x += Math.cos(perpAngle) * en.speed * 2.2;
+            en.y += Math.sin(perpAngle) * en.speed * 2.2;
         } else {
-            en.x += (dx/d) * en.speed;
-            en.y += (dy/d) * en.speed;
+            // Обычное поведение в зависимости от типа AI
+            if (en.type === 'shooter') {
+                if (d > 200) { en.x += (dx/d) * en.speed; en.y += (dy/d) * en.speed; }
+                else if (d < 130) { en.x -= (dx/d) * en.speed; en.y -= (dy/d) * en.speed; }
+
+                if (Date.now() - en.lastShot > en.fireRate) {
+                    let ang = Math.atan2(dy, dx);
+                    enemyBullets.push({ x: en.x, y: en.y, vx: Math.cos(ang) * 5, vy: Math.sin(ang) * 5, r: 4 });
+                    playSound('enemyShoot');
+                    en.lastShot = Date.now();
+                }
+            } else if (en.type === 'flanker') {
+                let targetAngle = player.angle + en.flankAngle; 
+                let targetX = player.x + Math.cos(targetAngle) * en.flankDist;
+                let targetY = player.y + Math.sin(targetAngle) * en.flankDist;
+
+                let fdx = targetX - en.x, fdy = targetY - en.y, fd = Math.hypot(fdx, fdy);
+
+                if (d < 100 || fd < 20) {
+                    en.x += (dx/d) * en.speed * 1.2;
+                    en.y += (dy/d) * en.speed * 1.2;
+                } else {
+                    en.x += (fdx/fd) * en.speed;
+                    en.y += (fdy/fd) * en.speed;
+                }
+            } else if (en.type === 'evader') {
+                // Быстрый ловкач, рвется к игроку
+                en.x += (dx/d) * en.speed;
+                en.y += (dy/d) * en.speed;
+            } else {
+                // Обычный штурмовик
+                en.x += (dx/d) * en.speed;
+                en.y += (dy/d) * en.speed;
+            }
         }
 
         if (d < player.radius + en.radius) {
             takeDamage(6);
         }
 
+        // Попадания игрока
         bullets.forEach((b, bi) => {
-            if (Math.hypot(b.x-en.x, b.y-en.y) < en.radius + 12) {
-                enemies.splice(i,1);
-                bullets.splice(bi,1);
-                score += en.isShooter ? 20 : 10;
+            if (Math.hypot(b.x - en.x, b.y - en.y) < en.radius + 12) {
+                en.hp -= 1;
+                bullets.splice(bi, 1);
                 playSound('hit');
 
-                if(Math.random() < 0.2) {
-                    let randType = Math.random();
-                    let pType = randType < 0.3 ? "HEAL" : ["UZI","SHOTGUN","MG"][Math.floor(Math.random()*3)];
-                    powerups.push({
-                        x: en.x,
-                        y: en.y,
-                        type: pType,
-                        spawnTime: Date.now()
-                    });
+                if (en.hp <= 0) {
+                    enemies.splice(i, 1);
+                    score += en.type === 'shooter' ? 20 : (en.type === 'evader' ? 25 : (en.type === 'flanker' ? 15 : 10));
+
+                    if (Math.random() < 0.2) {
+                        let randType = Math.random();
+                        let pType = randType < 0.3 ? "HEAL" : ["UZI", "SHOTGUN", "MG"][Math.floor(Math.random() * 3)];
+                        powerups.push({
+                            x: en.x,
+                            y: en.y,
+                            type: pType,
+                            spawnTime: Date.now()
+                        });
+                    }
                 }
             }
         });
@@ -397,7 +460,6 @@ function update() {
 
     if (player.wpTimer > 0) player.wpTimer--; else player.weapon = WEAPONS.PISTOL;
 
-    // Обновление интерфейса
     document.getElementById('hp-text').innerText = `${player.hp}/${player.maxHp}`;
     const hpFill = document.getElementById('hp-fill');
     hpFill.style.width = `${(player.hp / player.maxHp) * 100}%`;
@@ -406,8 +468,6 @@ function update() {
     document.getElementById('score').innerText = score;
     document.getElementById('wp-text').innerText = "GUN: " + player.weapon.name;
     document.getElementById('wp-timer').innerText = player.wpTimer > 0 ? (player.wpTimer/60).toFixed(1) + "s" : "";
-    
-    // Вывод текста со временем с миллисекундами (например, 12.34s)
     document.getElementById('wave-info').innerText = `WAVE ${wave}|${timeToNextWaveStr}s→`;
 }
 
@@ -415,9 +475,11 @@ function draw() {
     ctx.fillStyle = "rgba(5, 10, 5, 0.4)"; ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     const now = Date.now();
+    
+    // Отрисовка бонусов
     powerups.forEach(p => {
-        let timeLeft = 7000 - (now - p.spawnTime);
-        if (timeLeft > 2000 || Math.floor(now / 100) % 2 === 0) {
+        let timeLeftMs = 7000 - (now - p.spawnTime);
+        if (timeLeftMs > 2000 || Math.floor(now / 100) % 2 === 0) {
             if (p.type === "HEAL") {
                 ctx.fillStyle = "#0f0";
                 ctx.beginPath();
@@ -432,9 +494,15 @@ function draw() {
                 ctx.arc(p.x, p.y, 8, 0, Math.PI*2);
                 ctx.fill();
             }
+
+            ctx.fillStyle = "#ff0";
+            ctx.font = "bold 11px sans-serif";
+            ctx.textAlign = "center";
+            ctx.fillText((Math.max(0, timeLeftMs) / 1000).toFixed(2) + "s", p.x, p.y - 14);
         }
     });
     
+    // Игрок
     if (player.invulnerableTime % 4 < 2) {
         ctx.save(); ctx.translate(player.x, player.y); ctx.rotate(player.angle);
         ctx.strokeStyle = player.isDashing ? "#fff" : "#0f0"; ctx.lineWidth = 3;
@@ -451,22 +519,53 @@ function draw() {
         ctx.fill();
     });
 
+    // Отрисовка врагов
     enemies.forEach(en => {
-        if (en.isShooter) {
-            ctx.fillStyle = "#b0f";
+        if (en.type === 'shooter') {
+            ctx.fillStyle = "#b0f"; // Стрелок (Фиолетовый)
             ctx.beginPath();
             ctx.arc(en.x, en.y, en.radius, 0, Math.PI*2);
             ctx.fill();
             ctx.fillStyle = "#0ff";
             ctx.fillRect(en.x - 3, en.y - 3, 6, 6);
+        } else if (en.type === 'flanker') {
+            ctx.fillStyle = "#f80"; // Фланговик (Оранжевый)
+            ctx.beginPath();
+            ctx.arc(en.x, en.y, en.radius, 0, Math.PI*2);
+            ctx.fill();
+            ctx.strokeStyle="#fff";
+            ctx.strokeRect(en.x-3, en.y-3, 6, 6);
+        } else if (en.type === 'evader') {
+            ctx.fillStyle = "#0f0"; // Уворотчик (Ярко-зеленый)
+            ctx.beginPath();
+            ctx.arc(en.x, en.y, en.radius, 0, Math.PI*2);
+            ctx.fill();
+            ctx.strokeStyle="#000";
+            ctx.strokeRect(en.x-3, en.y-3, 6, 6);
         } else {
-            ctx.fillStyle = "#f05";
+            ctx.fillStyle = "#f05"; // Обычный (Красный)
             ctx.beginPath();
             ctx.arc(en.x, en.y, en.radius, 0, Math.PI*2);
             ctx.fill();
             ctx.strokeStyle="#fff";
             ctx.strokeRect(en.x-3, en.y-3, 6, 6);
         }
+
+        // Полоса здоровья (HP Bar) над врагом
+        const barW = 24;
+        const barH = 4;
+        const barX = en.x - barW / 2;
+        const barY = en.y - en.radius - 8;
+
+        ctx.fillStyle = "rgba(0,0,0,0.6)";
+        ctx.fillRect(barX, barY, barW, barH);
+
+        ctx.fillStyle = en.hp === en.maxHp ? "#0f0" : "#f90";
+        ctx.fillRect(barX, barY, (en.hp / en.maxHp) * barW, barH);
+
+        ctx.strokeStyle = "#000";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(barX, barY, barW, barH);
     });
 }
 
@@ -478,14 +577,26 @@ setInterval(() => {
         if(s==0){x=Math.random()*canvas.width; y=-30;} else if(s==1){x=Math.random()*canvas.width; y=canvas.height+30;}
         else if(s==2){x=-30; y=Math.random()*canvas.height;} else {x=canvas.width+30; y=canvas.height+30;}
         
-        let isShooter = Math.random() < 0.3;
+        let randAI = Math.random();
+        let type = 'chaser';
+        if (randAI < 0.25) type = 'shooter';
+        else if (randAI < 0.50) type = 'flanker';
+        else if (randAI < 0.75) type = 'evader';
+
         enemies.push({
             x, y,
             radius: 11,
-            speed: isShooter ? 1.5 : 2,
-            isShooter: isShooter,
+            speed: type === 'shooter' ? 1.5 : (type === 'evader' ? 2.5 : (type === 'flanker' ? 2.2 : 2.0)),
+            type: type,
+            hp: 2,
+            maxHp: 2,
             lastShot: Date.now(),
-            fireRate: 1500 + Math.random() * 1000
+            fireRate: 1500 + Math.random() * 1000,
+            flankAngle: (Math.random() < 0.5 ? 1 : -1) * (Math.PI / 2 + Math.random() * 0.8),
+            flankDist: 120 + Math.random() * 60,
+            dodgeTimer: 0,
+            dodgeCooldown: 0,
+            dodgeDir: 1
         });
     }
 }, 600);
@@ -498,6 +609,5 @@ setupControls();
 loop();
 </script>
     <script src="https://dmamax.vercel.app/legal-module.js"></script>
-
 </body>
 </html>
