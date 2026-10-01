@@ -4,10 +4,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>RengerArena</title>
+    <link rel="icon" type="image/x-icon" href="favicon.ico">
     <style>
-        body { margin: 0; overflow: hidden; background: #050805; font-family: 'Segoe UI', sans-serif; touch-action: none; }
+        body { margin: 0; overflow: hidden; background: #050805; font-family: 'Segoe UI', sans-serif; touch-action: none; cursor: crosshair; }
         canvas { display: block; }
         #ui { position: absolute; top: 15px; left: 15px; color: #0f0; pointer-events: none; z-index: 10; }
+        .hp-bar-bg { width: 200px; height: 16px; background: rgba(255, 0, 0, 0.2); border: 1px solid #f00; margin-bottom: 5px; border-radius: 3px; overflow: hidden; }
+        .hp-bar-fill { width: 100%; height: 100%; background: #0f0; transition: width 0.1s ease; }
         .joystick-container { position: absolute; bottom: 40px; width: 110px; height: 110px; background: rgba(0, 255, 0, 0.05); border: 1px solid rgba(0, 255, 0, 0.2); border-radius: 50%; display: flex; align-items: center; justify-content: center; }
         #move-container { left: 30px; }
         #shoot-container { right: 30px; border-color: rgba(255, 50, 50, 0.3); }
@@ -19,10 +22,13 @@
 <body>
 
 <div id="ui">
+    <div style="font-size: 14px; font-weight: bold;">HP: <span id="hp-text">100/100</span></div>
+    <div class="hp-bar-bg"><div id="hp-fill" class="hp-bar-fill"></div></div>
     <div style="font-size: 18px;">SCORE: <span id="score">0</span></div>
     <div id="wp-text" style="color: #0ff;">GUN: PISTOL</div>
     <div id="wp-timer" style="color: #ff0;"></div>
-    <div style="font-size: 10px; margin-top: 5px; opacity: 0.7;">НАЖМИ НА ЭКРАН ДЛЯ ВКЛ. ЗВУКА</div>
+    <div id="wave-info" style="color: #f0f; font-weight: bold; margin-top: 5px;">WAVE 1 | NEXT WAVE IN: 17s (MAX ENEMIES: 15)</div>
+    <div style="font-size: 10px; margin-top: 5px; opacity: 0.7;">УПРАВЛЕНИЕ: WASD | МЫШЬ | DASH: ПРОБЕЛ</div>
 </div>
 
 <div id="move-container" class="joystick-container"><div id="move-stick" class="stick"></div></div>
@@ -35,7 +41,7 @@
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 
-// --- AUDIO ENGINE (Синтезатор звуков) ---
+// --- AUDIO ENGINE ---
 const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
 function playSound(type) {
@@ -54,6 +60,13 @@ function playSound(type) {
         gain.gain.setValueAtTime(0.1, now);
         gain.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
         osc.start(); osc.stop(now + 0.1);
+    } else if (type === 'enemyShoot') {
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(300, now);
+        osc.frequency.exponentialRampToValueAtTime(100, now + 0.15);
+        gain.gain.setValueAtTime(0.08, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.15);
+        osc.start(); osc.stop(now + 0.15);
     } else if (type === 'uzi') {
         osc.type = 'square';
         osc.frequency.setValueAtTime(600, now);
@@ -66,6 +79,13 @@ function playSound(type) {
         gain.gain.setValueAtTime(0.1, now);
         gain.gain.linearRampToValueAtTime(0, now + 0.2);
         osc.start(); osc.stop(now + 0.2);
+    } else if (type === 'playerHurt') {
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(150, now);
+        osc.frequency.linearRampToValueAtTime(60, now + 0.25);
+        gain.gain.setValueAtTime(0.2, now);
+        gain.gain.linearRampToValueAtTime(0, now + 0.25);
+        osc.start(); osc.stop(now + 0.25);
     } else if (type === 'powerup') {
         osc.type = 'sine';
         osc.frequency.setValueAtTime(440, now);
@@ -73,6 +93,13 @@ function playSound(type) {
         gain.gain.setValueAtTime(0.1, now);
         gain.gain.linearRampToValueAtTime(0, now + 0.2);
         osc.start(); osc.stop(now + 0.2);
+    } else if (type === 'heal') {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(300, now);
+        osc.frequency.exponentialRampToValueAtTime(600, now + 0.3);
+        gain.gain.setValueAtTime(0.15, now);
+        gain.gain.linearRampToValueAtTime(0, now + 0.3);
+        osc.start(); osc.stop(now + 0.3);
     } else if (type === 'dash') {
         osc.type = 'triangle';
         osc.frequency.setValueAtTime(200, now);
@@ -85,6 +112,11 @@ function playSound(type) {
 
 // --- GAME SETTINGS ---
 let score = 0;
+let wave = 1;
+let maxEnemies = 15;
+let gameStartTime = Date.now();
+const WAVE_INTERVAL = 17000; // 17 секунд
+
 const WEAPONS = {
     PISTOL: { name: "PISTOL", fireRate: 400, color: "#fff", spread: 0.05, count: 1, bSize: 3, speed: 12, sound: 'shoot' },
     UZI: { name: "UZI", fireRate: 110, color: "#0ff", spread: 0.15, count: 1, bSize: 2, speed: 15, sound: 'uzi' },
@@ -94,14 +126,117 @@ const WEAPONS = {
 
 const player = {
     x: 0, y: 0, radius: 11, angle: 0, speed: 4.5,
+    hp: 100, maxHp: 100, invulnerableTime: 0,
     weapon: WEAPONS.PISTOL, wpTimer: 0, lastShot: 0,
     isDashing: false, dashTime: 0, dashCooldown: 0
 };
 
-let enemies = [], bullets = [], powerups = [];
+let enemies = [], bullets = [], enemyBullets = [], powerups = [];
 const controls = { move: { x: 0, y: 0, tId: null }, shoot: { x: 0, y: 0, active: false, tId: null } };
+const keys = {};
+const mouse = { x: 0, y: 0, isDown: false, active: false };
 
-// --- MULTITOUCH & CONTROLS ---
+function triggerDash() {
+    if (player.dashCooldown <= 0) {
+        player.isDashing = true;
+        player.dashTime = 30;
+        player.dashCooldown = 120;
+        playSound('dash');
+    }
+}
+
+function takeDamage(amount) {
+    if (player.isDashing || player.invulnerableTime > 0) return;
+    
+    player.hp -= amount;
+    player.invulnerableTime = 30; // ~0.5 сек невидимости/неуязвимости
+    playSound('playerHurt');
+
+    if (player.hp <= 0) {
+        player.hp = 0;
+        resetGame();
+    }
+}
+
+function resetGame() {
+    score = 0;
+    wave = 1;
+    maxEnemies = 15;
+    gameStartTime = Date.now();
+    enemies = [];
+    bullets = [];
+    enemyBullets = [];
+    powerups = [];
+    player.hp = player.maxHp;
+    player.invulnerableTime = 0;
+    player.weapon = WEAPONS.PISTOL;
+    player.wpTimer = 0;
+}
+
+// --- CONTROLS LISTENERS ---
+window.addEventListener('mousemove', (e) => { mouse.x = e.clientX; mouse.y = e.clientY; mouse.active = true; });
+window.addEventListener('mousedown', (e) => { if (e.button === 0) { mouse.isDown = true; mouse.active = true; } });
+window.addEventListener('mouseup', (e) => { if (e.button === 0) mouse.isDown = false; });
+
+window.addEventListener('keydown', (e) => {
+    keys[e.code] = true;
+    if ((e.code === 'Space' || e.code === 'ShiftLeft' || e.code === 'ShiftRight') && !e.repeat) triggerDash();
+});
+window.addEventListener('keyup', (e) => { keys[e.code] = false; });
+
+function pollGamepadAndKeyboard() {
+    let inputMoveX = 0, inputMoveY = 0;
+    let inputShootX = 0, inputShootY = 0;
+    let isShooting = false;
+
+    if (keys['KeyW'] || keys['ArrowUp']) inputMoveY -= 1;
+    if (keys['KeyS'] || keys['ArrowDown']) inputMoveY += 1;
+    if (keys['KeyA'] || keys['ArrowLeft']) inputMoveX -= 1;
+    if (keys['KeyD'] || keys['ArrowRight']) inputMoveX += 1;
+
+    if (inputMoveX !== 0 && inputMoveY !== 0) {
+        inputMoveX *= 0.7071;
+        inputMoveY *= 0.7071;
+    }
+
+    const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+    for (const gp of gamepads) {
+        if (!gp) continue;
+        if (Math.abs(gp.axes[0]) > 0.15) inputMoveX = gp.axes[0];
+        if (Math.abs(gp.axes[1]) > 0.15) inputMoveY = gp.axes[1];
+
+        if (gp.axes.length >= 4) {
+            if (Math.abs(gp.axes[2]) > 0.15 || Math.abs(gp.axes[3]) > 0.15) {
+                inputShootX = gp.axes[2];
+                inputShootY = gp.axes[3];
+                isShooting = true;
+            }
+        }
+
+        if (gp.buttons[0]?.pressed || gp.buttons[1]?.pressed || gp.buttons[10]?.pressed) triggerDash();
+    }
+
+    if (controls.move.tId !== null) { inputMoveX = controls.move.x; inputMoveY = controls.move.y; }
+
+    if (controls.shoot.tId !== null) {
+        inputShootX = controls.shoot.x;
+        inputShootY = controls.shoot.y;
+        isShooting = true;
+    } else if (mouse.isDown) {
+        player.angle = Math.atan2(mouse.y - player.y, mouse.x - player.x);
+        isShooting = true;
+    } else if (mouse.active) {
+        player.angle = Math.atan2(mouse.y - player.y, mouse.x - player.x);
+    } else if (isShooting) {
+        controls.shoot.x = inputShootX;
+        controls.shoot.y = inputShootY;
+    }
+
+    controls.move.x = inputMoveX;
+    controls.move.y = inputMoveY;
+    controls.shoot.active = isShooting;
+}
+
 function setupControls() {
     const mZone = document.getElementById('move-container'), sZone = document.getElementById('shoot-container'), dBtn = document.getElementById('dash-btn');
 
@@ -109,10 +244,7 @@ function setupControls() {
         for (let t of e.changedTouches) {
             if (isInside(t, mZone) && controls.move.tId === null) { controls.move.tId = t.identifier; updateJoy(t, mZone, 'move'); }
             else if (isInside(t, sZone) && controls.shoot.tId === null) { controls.shoot.tId = t.identifier; updateJoy(t, sZone, 'shoot'); }
-            else if (isInside(t, dBtn) && player.dashCooldown <= 0) {
-                player.isDashing = true; player.dashTime = 30; player.dashCooldown = 120;
-                playSound('dash');
-            }
+            else if (isInside(t, dBtn)) { triggerDash(); }
         }
     };
 
@@ -147,6 +279,17 @@ function updateJoy(t, zone, type) {
 
 // --- GAME LOOP ---
 function update() {
+    pollGamepadAndKeyboard();
+
+    // Каждые 17 сек удваиваем лимит врагов
+    let elapsed = Date.now() - gameStartTime;
+    let currentWaveNum = Math.floor(elapsed / WAVE_INTERVAL) + 1;
+    if (currentWaveNum > wave) {
+        wave = currentWaveNum;
+        maxEnemies *= 2;
+    }
+    let timeToNextWave = Math.ceil((WAVE_INTERVAL - (elapsed % WAVE_INTERVAL)) / 1000);
+
     let s = player.isDashing ? player.speed * 2.5 : player.speed;
     let nx = player.x + controls.move.x * s, ny = player.y + controls.move.y * s;
     if (nx > player.radius && nx < canvas.width - player.radius) player.x = nx;
@@ -154,11 +297,13 @@ function update() {
 
     if (player.isDashing && --player.dashTime <= 0) player.isDashing = false;
     if (player.dashCooldown > 0) player.dashCooldown--;
+    if (player.invulnerableTime > 0) player.invulnerableTime--;
 
+    // Выстрелы игрока
     if (controls.shoot.active) {
-        let baseAng = Math.atan2(controls.shoot.y, controls.shoot.x), best = null, minD = 0.5;
-        enemies.forEach(en => { let a = Math.atan2(en.y-player.y, en.x-player.x); if(Math.abs(baseAng-a)<minD){ minD=Math.abs(baseAng-a); best=a; } });
-        player.angle = best !== null ? best : baseAng;
+        if (controls.shoot.x !== 0 || controls.shoot.y !== 0) {
+            player.angle = Math.atan2(controls.shoot.y, controls.shoot.x);
+        }
 
         if (Date.now() - player.lastShot > player.weapon.fireRate) {
             for(let i=0; i<player.weapon.count; i++) {
@@ -170,59 +315,185 @@ function update() {
         }
     }
 
+    // Обновление врагов
     enemies.forEach((en, i) => {
-        let dx = player.x-en.x, dy = player.y-en.y, d = Math.hypot(dx, dy);
-        en.x += (dx/d)*2; en.y += (dy/d)*2;
-        if (d < player.radius + en.radius && !player.isDashing) { score = 0; enemies = []; player.weapon = WEAPONS.PISTOL; }
+        let dx = player.x - en.x, dy = player.y - en.y, d = Math.hypot(dx, dy);
+
+        if (en.isShooter) {
+            if (d > 180) { en.x += (dx/d) * en.speed; en.y += (dy/d) * en.speed; }
+            else if (d < 120) { en.x -= (dx/d) * en.speed; en.y -= (dy/d) * en.speed; }
+
+            if (Date.now() - en.lastShot > en.fireRate) {
+                let ang = Math.atan2(dy, dx);
+                enemyBullets.push({ x: en.x, y: en.y, vx: Math.cos(ang) * 5, vy: Math.sin(ang) * 5, r: 4 });
+                playSound('enemyShoot');
+                en.lastShot = Date.now();
+            }
+        } else {
+            en.x += (dx/d) * en.speed;
+            en.y += (dy/d) * en.speed;
+        }
+
+        // Физический удар наносит 6 HP
+        if (d < player.radius + en.radius) {
+            takeDamage(6);
+        }
+
+        // Попадание пуль игрока
         bullets.forEach((b, bi) => {
             if (Math.hypot(b.x-en.x, b.y-en.y) < en.radius + 12) {
-                enemies.splice(i,1); bullets.splice(bi,1); score += 10;
+                enemies.splice(i,1);
+                bullets.splice(bi,1);
+                score += en.isShooter ? 20 : 10;
                 playSound('hit');
-                if(Math.random() < 0.12) powerups.push({x: en.x, y: en.y, type: ["UZI","SHOTGUN","MG"][Math.floor(Math.random()*3)]});
+
+                // Спавн бонусов (оружие или аптечка)
+                if(Math.random() < 0.2) {
+                    let randType = Math.random();
+                    let pType = randType < 0.3 ? "HEAL" : ["UZI","SHOTGUN","MG"][Math.floor(Math.random()*3)];
+                    powerups.push({
+                        x: en.x,
+                        y: en.y,
+                        type: pType,
+                        spawnTime: Date.now()
+                    });
+                }
             }
         });
     });
 
+    // Вражеские пули (Дальний урон наносит 7 HP)
+    enemyBullets.forEach((eb, ebi) => {
+        eb.x += eb.vx;
+        eb.y += eb.vy;
+
+        if (Math.hypot(player.x - eb.x, player.y - eb.y) < player.radius + eb.r) {
+            takeDamage(7);
+            enemyBullets.splice(ebi, 1);
+        }
+    });
+    enemyBullets = enemyBullets.filter(eb => eb.x > 0 && eb.x < canvas.width && eb.y > 0 && eb.y < canvas.height);
+
     bullets.forEach(b => { b.x += b.vx; b.y += b.vy; });
     bullets = bullets.filter(b => b.x > 0 && b.x < canvas.width && b.y > 0 && b.y < canvas.height);
 
+    // Подбор и время жизни бонусов (7 секунд)
+    const now = Date.now();
     powerups.forEach((p, i) => {
         if (Math.hypot(player.x-p.x, player.y-p.y) < 30) {
-            player.weapon = WEAPONS[p.type]; player.wpTimer = 600;
-            powerups.splice(i,1); playSound('powerup');
+            if (p.type === "HEAL") {
+                player.hp = Math.min(player.maxHp, player.hp + 30); // Восстанавливает 30 HP
+                playSound('heal');
+            } else {
+                player.weapon = WEAPONS[p.type];
+                player.wpTimer = 600;
+                playSound('powerup');
+            }
+            powerups.splice(i,1);
         }
     });
+    powerups = powerups.filter(p => (now - p.spawnTime) < 7000);
 
     if (player.wpTimer > 0) player.wpTimer--; else player.weapon = WEAPONS.PISTOL;
+
+    // Обновление UI
+    document.getElementById('hp-text').innerText = `${player.hp}/${player.maxHp}`;
+    const hpFill = document.getElementById('hp-fill');
+    hpFill.style.width = `${(player.hp / player.maxHp) * 100}%`;
+    hpFill.style.background = player.hp < 30 ? '#f00' : (player.hp < 60 ? '#ff0' : '#0f0');
 
     document.getElementById('score').innerText = score;
     document.getElementById('wp-text').innerText = "GUN: " + player.weapon.name;
     document.getElementById('wp-timer').innerText = player.wpTimer > 0 ? (player.wpTimer/60).toFixed(1) + "s" : "";
+    document.getElementById('wave-info').innerText = `WAVE ${wave} | NEXT WAVE IN: ${timeToNextWave}s (MAX ENEMIES: ${maxEnemies})`;
 }
 
 function draw() {
     ctx.fillStyle = "rgba(5, 10, 5, 0.4)"; ctx.fillRect(0, 0, canvas.width, canvas.height);
-    powerups.forEach(p => { ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(p.x, p.y, 8, 0, Math.PI*2); ctx.fill(); });
-    
-    ctx.save(); ctx.translate(player.x, player.y); ctx.rotate(player.angle);
-    ctx.strokeStyle = player.isDashing ? "#fff" : "#0f0"; ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.moveTo(10,0); ctx.lineTo(-7,-8); ctx.lineTo(-7,8); ctx.closePath(); ctx.stroke();
-    ctx.restore();
 
+    // Отрисовка бонусов (мигают за 2 секунды до исчезновения)
+    const now = Date.now();
+    powerups.forEach(p => {
+        let timeLeft = 7000 - (now - p.spawnTime);
+        if (timeLeft > 2000 || Math.floor(now / 100) % 2 === 0) {
+            if (p.type === "HEAL") {
+                // Отрисовка Аптечки (зеленый кружок с белым крестиком)
+                ctx.fillStyle = "#0f0";
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, 9, 0, Math.PI*2);
+                ctx.fill();
+                ctx.fillStyle = "#fff";
+                ctx.fillRect(p.x - 2, p.y - 5, 4, 10);
+                ctx.fillRect(p.x - 5, p.y - 2, 10, 4);
+            } else {
+                // Бонусы оружия
+                ctx.fillStyle = "#fff";
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, 8, 0, Math.PI*2);
+                ctx.fill();
+            }
+        }
+    });
+    
+    // Игрок (мигает при получении урона)
+    if (player.invulnerableTime % 4 < 2) {
+        ctx.save(); ctx.translate(player.x, player.y); ctx.rotate(player.angle);
+        ctx.strokeStyle = player.isDashing ? "#fff" : "#0f0"; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.moveTo(10,0); ctx.lineTo(-7,-8); ctx.lineTo(-7,8); ctx.closePath(); ctx.stroke();
+        ctx.restore();
+    }
+
+    // Пули игрока
     bullets.forEach(b => { ctx.fillStyle = b.c; ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI*2); ctx.fill(); });
-    enemies.forEach(en => { ctx.fillStyle = "#f05"; ctx.beginPath(); ctx.arc(en.x, en.y, 11, 0, Math.PI*2); ctx.fill(); ctx.strokeStyle="#fff"; ctx.strokeRect(en.x-3, en.y-3, 6, 6); });
+
+    // Пули врагов
+    enemyBullets.forEach(eb => {
+        ctx.fillStyle = "#ff0055";
+        ctx.beginPath();
+        ctx.arc(eb.x, eb.y, eb.r, 0, Math.PI*2);
+        ctx.fill();
+    });
+
+    // Враги
+    enemies.forEach(en => {
+        if (en.isShooter) {
+            ctx.fillStyle = "#b0f";
+            ctx.beginPath();
+            ctx.arc(en.x, en.y, en.radius, 0, Math.PI*2);
+            ctx.fill();
+            ctx.fillStyle = "#0ff";
+            ctx.fillRect(en.x - 3, en.y - 3, 6, 6);
+        } else {
+            ctx.fillStyle = "#f05";
+            ctx.beginPath();
+            ctx.arc(en.x, en.y, en.radius, 0, Math.PI*2);
+            ctx.fill();
+            ctx.strokeStyle="#fff";
+            ctx.strokeRect(en.x-3, en.y-3, 6, 6);
+        }
+    });
 }
 
 function loop() { update(); draw(); requestAnimationFrame(loop); }
 
+// Спавн врагов
 setInterval(() => {
-    if (enemies.length < 15) {
+    if (enemies.length < maxEnemies) {
         let x, y, s = Math.floor(Math.random()*4);
         if(s==0){x=Math.random()*canvas.width; y=-30;} else if(s==1){x=Math.random()*canvas.width; y=canvas.height+30;}
-        else if(s==2){x=-30; y=Math.random()*canvas.height;} else {x=canvas.width+30; y=Math.random()*canvas.height;}
-        enemies.push({x, y, radius: 11});
+        else if(s==2){x=-30; y=Math.random()*canvas.height;} else {x=canvas.width+30; y=canvas.height+30;}
+        
+        let isShooter = Math.random() < 0.3;
+        enemies.push({
+            x, y,
+            radius: 11,
+            speed: isShooter ? 1.5 : 2,
+            isShooter: isShooter,
+            lastShot: Date.now(),
+            fireRate: 1500 + Math.random() * 1000
+        });
     }
-}, 800);
+}, 600);
 
 window.addEventListener('resize', () => { canvas.width = window.innerWidth; canvas.height = window.innerHeight; });
 canvas.width = window.innerWidth; canvas.height = window.innerHeight;
@@ -232,11 +503,5 @@ setupControls();
 loop();
 </script>
 </body>
-
-
-
-
-
-
 <script src="https://dmamax.netlify.app/legal-module.js"></script>
 </html>
