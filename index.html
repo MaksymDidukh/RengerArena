@@ -217,9 +217,23 @@ function killEnemy(en, index, wasExploded = false) {
     enemies.splice(index, 1);
     score += en.type === 'shooter' ? 20 : (en.type === 'evader' ? 25 : (en.type === 'flanker' ? 15 : 10));
 
-    if (Math.random() < 0.2) {
+    // Проверяем, меньше ли у игрока 30% здоровья
+    let isLowHp = player.hp < player.maxHp * 0.3;
+    // Базовый шанс выпадения предмета 20%, если HP < 30%, увеличиваем шанс на 30% (суммарно 50%)
+    let dropChance = isLowHp ? 0.5 : 0.2;
+
+    if (Math.random() < dropChance) {
         let randType = Math.random();
-        let pType = randType < 0.3 ? "HEAL" : ["UZI", "SHOTGUN", "MG"][Math.floor(Math.random() * 3)];
+        let pType;
+        
+        if (isLowHp) {
+            // При низком HP делаем повышенный приоритет на выпадение аптечки (например, 60% шанс на HEAL среди всех бонусов)
+            pType = randType < 0.6 ? "HEAL" : ["UZI", "SHOTGUN", "MG"][Math.floor(Math.random() * 3)];
+        } else {
+            // Обычное распределение в штатном режиме
+            pType = randType < 0.3 ? "HEAL" : ["UZI", "SHOTGUN", "MG"][Math.floor(Math.random() * 3)];
+        }
+
         powerups.push({
             x: en.x,
             y: en.y,
